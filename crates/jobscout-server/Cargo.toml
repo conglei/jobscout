@@ -1,0 +1,15 @@
+[package]
+name = "jobscout-server"
+description = "axum HTTP + SSE + MCP server for jobscout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "jobscout-server"
+path = "src/main.rs"
+
+[dependencies]
+jobscout-core = { workspace = true }

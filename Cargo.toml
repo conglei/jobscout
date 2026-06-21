@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/conglei/jobscout"
+authors = ["Conglei Shi"]
+
+[workspace.dependencies]
+jobscout-core = { path = "crates/jobscout-core" }
+
+# Keep release builds lean and fast to link for a locally-run binary.
+[profile.release]
+lto = "thin"
+strip = true
