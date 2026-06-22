@@ -126,6 +126,64 @@ async fn http_transport_serves_the_mcp_handshake_and_search() {
     );
 }
 
+#[tokio::test]
+async fn well_known_oauth_paths_404_instead_of_falling_through_to_the_spa() {
+    // A web dir with an index.html, so the SPA fallback *would* serve it for unknown
+    // paths — the behaviour we must suppress for OAuth-discovery probes so a no-auth
+    // server is correctly discoverable by connector clients.
+    let web_dir = std::env::temp_dir().join(format!("joblode_web_{}", free_port()));
+    std::fs::create_dir_all(&web_dir).expect("create web dir");
+    std::fs::write(web_dir.join("index.html"), "<!doctype html>SPA").expect("write index.html");
+
+    let addr = format!("127.0.0.1:{}", free_port());
+    let child = Command::new(env!("CARGO_BIN_EXE_joblode-server"))
+        .arg("http")
+        .env("JOBLODE_PARQUET", fixture_path())
+        .env("JOBLODE_HTTP_ADDR", &addr)
+        .env("JOBLODE_WEB_DIR", &web_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn joblode-server");
+    let _guard = ServerGuard(child);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build reqwest client");
+    let base = format!("http://{addr}");
+
+    // Poll until the SPA root answers.
+    let mut ready = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(&base).send().await {
+            if resp.status().is_success() {
+                ready = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(ready, "server should serve the SPA root within 10s");
+
+    // An app route falls through to the SPA (client-side routing still works).
+    let app = client
+        .get(format!("{base}/shortlist"))
+        .send()
+        .await
+        .expect("app route");
+    assert!(app.status().is_success());
+    assert!(app.text().await.expect("body").contains("SPA"));
+
+    // But an OAuth-discovery probe gets a clean 404 — not the SPA HTML.
+    let well_known = client
+        .get(format!("{base}/.well-known/oauth-authorization-server"))
+        .send()
+        .await
+        .expect("well-known probe");
+    assert_eq!(well_known.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
 #[test]
 fn rejects_an_unknown_transport() {
     // The transport is validated before the dataset is touched (see main.rs), so

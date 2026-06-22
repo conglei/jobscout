@@ -248,6 +248,14 @@ async fn serve_http(
     let router = axum::Router::new()
         .nest_service("/mcp", service)
         .merge(http::router(api_store, api_model, api_embed))
+        // joblode is local and unauthenticated (DESIGN §9). Answer OAuth-discovery
+        // probes (RFC 8414 / 9728) with a clean 404 so clients treat us as
+        // no-auth, instead of letting the SPA fallback return index.html (HTML 200)
+        // — which derails connector auto-registration (e.g. claude.ai connectors).
+        .route(
+            "/.well-known/{*path}",
+            axum::routing::any(|| async { axum::http::StatusCode::NOT_FOUND }),
+        )
         .fallback_service(serve_web)
         .layer(trace);
     let listener = tokio::net::TcpListener::bind(&addr)
