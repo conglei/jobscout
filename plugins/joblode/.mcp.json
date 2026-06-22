@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "joblode": {
+      "command": "joblode-server",
+      "args": ["stdio"],
+      "env": {
+        "JOBLODE_PARQUET": "${JOBLODE_PARQUET}",
+        "JOBLODE_EMBED_PROVIDER": "${JOBLODE_EMBED_PROVIDER}",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "JOBLODE_RANK_PROVIDER": "${JOBLODE_RANK_PROVIDER}",
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}"
+      }
+    }
+  }
+}
