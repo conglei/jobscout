@@ -2,16 +2,20 @@
 //! Claude Desktop/Code) and, over HTTP, the MCP transport (`/mcp`), the REST API
 //! (`/api`), and the React build (static, with an SPA fallback).
 //!
-//! Tools: `search_jobs`, `get_job`, and `rank_jobs`. The MCP App `ui://` resource
-//! arrives in Phase 5; see `docs/DESIGN.md`.
+//! Tools: `search_jobs`, `get_job`, `rank_jobs`, and `semantic_search`. Over HTTP
+//! it also serves the MCP App `ui://` bundle (`web/dist-app`) and the standalone
+//! React build (`web/dist`); see `docs/DESIGN.md` §7.
 //!
-//! Usage: `joblode-server [stdio|http]` (default `stdio`). The parquet path comes
-//! from `JOBLODE_PARQUET` (default `open-jobs.parquet`); for HTTP, the bind address
-//! from `JOBLODE_HTTP_ADDR` (default `127.0.0.1:8000`) and the web build directory
-//! from `JOBLODE_WEB_DIR` (default `web/dist`). Ranking with a cheap model is
-//! enabled by `JOBLODE_RANK_PROVIDER=gemini` + `GEMINI_API_KEY` (see
-//! `build_model_client`); absent that, the free taste ranking still works.
+//! Config comes from the environment (a gitignored `.env` is loaded at startup;
+//! see `.env.example`). `joblode-server [stdio|http]` (default `stdio`); parquet
+//! from `JOBLODE_PARQUET` (default `open-jobs.parquet`); for HTTP, bind from
+//! `JOBLODE_HTTP_ADDR` (default `127.0.0.1:8000`) and the web build from
+//! `JOBLODE_WEB_DIR` (default `web/dist`). Ranking
+//! (`JOBLODE_RANK_PROVIDER=gemini`, `GEMINI_API_KEY`) and semantic search
+//! (`JOBLODE_EMBED_PROVIDER=openai`, `OPENAI_API_KEY`) are config-gated; absent
+//! their keys, free search/ranking work.
 
+mod app_ui;
 mod dto;
 mod http;
 mod mcp;
@@ -35,6 +39,11 @@ use crate::mcp::JobServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load a gitignored `.env` (if present) before reading any config, so keys
+    // like GEMINI_API_KEY / OPENAI_API_KEY needn't be re-exported each run. Real
+    // environment variables take precedence; a missing file is fine.
+    let _ = dotenvy::dotenv();
+
     // Validate the transport before touching the dataset, so a bad invocation
     // fails fast with a clear message instead of a parquet error.
     let mode = std::env::args().nth(1).unwrap_or_else(|| "stdio".into());

@@ -4,7 +4,10 @@ How to run the joblode MCP server locally and connect Claude to it so you can se
 dataset (~1M live roles) from a conversation. For architecture and the roadmap, see
 [DESIGN.md](DESIGN.md).
 
-The server exposes three MCP tools today:
+For the full agent-driven workflow (narrow → search → rank → intros → track) and copy-paste prompts, see
+[ORCHESTRATION.md](ORCHESTRATION.md).
+
+The server exposes four MCP tools:
 
 - **`search_jobs`** — hard filters (function, level, title, company, city, country, min comp) → a total
   match count plus compact rows (`limit`-capped, default 50).
@@ -20,7 +23,8 @@ The server exposes three MCP tools today:
   an alternate title) — useful when the messy structured fields don't filter cleanly. Takes the same hard
   filters; returns compact rows with a `score`. **Requires an embeddings key** (see config).
 
-The in-conversation React UI lands in a later phase (DESIGN §8).
+When a host supports MCP Apps, the result-returning tools (`search_jobs`, `semantic_search`, `rank_jobs`)
+also render an **interactive results table** in the conversation — see [Run the web UI](#run-the-web-ui-optional).
 
 ## 1. Get the dataset
 
@@ -114,12 +118,42 @@ Claude calls `search_jobs` to draw the candidate set, then `get_job` for the rol
 full. Structured fields are LLM extractions — confirm comp, work authorization, and location against
 `jd_markdown`, and use the `url` (the only apply link) to apply.
 
+## Run the web UI (optional)
+
+One React build serves two runtimes (DESIGN §7): a **standalone web app** over the REST API, and the
+**MCP App** `ui://` resource rendered inside Claude. Build both with one command:
+
+```bash
+pnpm --filter @joblode/web build
+# → web/dist/      the standalone web app (multi-file)
+# → web/dist-app/  the MCP App bundle (one self-contained index.html)
+```
+
+Then run the server over HTTP and open it:
+
+```bash
+./target/release/joblode-server http      # from the repo root
+# standalone UI:  http://127.0.0.1:8000/
+```
+
+The `http` server serves `web/dist` at `/` (override with `JOBLODE_WEB_DIR`) and serves the MCP App bundle
+as the `ui://joblode/app` resource, read from `web/dist-app/index.html` (override with `JOBLODE_APP_HTML`).
+A host that supports MCP Apps fetches that resource and renders the table in the conversation; one that
+doesn't still gets the structured JSON in every tool result, so nothing breaks. Building the UI is optional
+— the tools work headless without it.
+
 ## Configuration
+
+Config is read from the environment. At startup the server also loads a gitignored
+`.env` from the working directory if present — copy [`.env.example`](../.env.example)
+to `.env` and fill in keys (real environment variables take precedence).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `JOBLODE_PARQUET` | `open-jobs.parquet` (relative to the working dir) | Path to the dataset. Use an absolute path when launched by Claude. |
 | `JOBLODE_HTTP_ADDR` | `127.0.0.1:8000` | Bind address for the `http` transport (loopback only). |
+| `JOBLODE_WEB_DIR` | `web/dist` | Standalone web app served at `/` over HTTP. |
+| `JOBLODE_APP_HTML` | `web/dist-app/index.html` | MCP App bundle served as the `ui://joblode/app` resource. |
 | *(argument)* | `stdio` | Transport: `stdio` or `http`. |
 | `JOBLODE_RANK_PROVIDER` | *(unset)* | Set to `gemini` to enable the `match`/`pairwise` ranking methods. |
 | `GEMINI_API_KEY` | *(unset)* | Cheap-model key (override the var name with `JOBLODE_RANK_API_KEY_ENV`). |

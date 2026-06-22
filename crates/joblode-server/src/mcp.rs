@@ -1,25 +1,38 @@
-//! The joblode MCP server: `search_jobs`, `get_job`, and `rank_jobs` tools over a
-//! shared [`JobStore`] (plus an optional cheap-model client for ranking). Tools
-//! return structured JSON only; the `ui://` resource arrives in Phase 5 (see
-//! `docs/DESIGN.md`).
+//! The joblode MCP server: `search_jobs`, `get_job`, `rank_jobs`, and
+//! `semantic_search` tools over a shared [`JobStore`] (plus optional cheap-model
+//! clients). Every tool returns structured JSON; the result-returning tools also
+//! carry `_meta.ui.resourceUri` and the server serves the matching `ui://` MCP App
+//! resource (the interactive table) — see [`crate::app_ui`] and `docs/DESIGN.md` §7.
 
 use std::sync::{Arc, Mutex};
 
 use joblode_core::{Job, JobStore};
 use joblode_rank::{EmbedClient, ModelClient};
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData, Json, ServerHandler,
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
+        ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
+        ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_router, ErrorData, Json, RoleServer, ServerHandler,
 };
 use serde::Deserialize;
 
+use crate::app_ui;
 use crate::dto::{
     JobSummary, RankParams, RankResults, SearchParams, SearchResults, SemanticParams,
     SemanticResults,
 };
 use crate::ranking::{self, RankError};
 use crate::semantic;
+
+/// Tools whose results render in the MCP App table; tagged with `_meta.ui` so a
+/// host fetches and renders the `ui://` bundle. `get_job` is detail-only (the
+/// drawer is reached from the table), so it carries no UI link.
+const UI_TOOLS: &[&str] = &["search_jobs", "semantic_search", "rank_jobs"];
 
 /// Identifies one role for [`JobServer::get_job`].
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -149,15 +162,92 @@ impl JobServer {
     }
 }
 
-#[tool_handler(router = self.tool_router)]
 impl ServerHandler for JobServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION"),
+    // Hand-written (rather than `#[tool_handler]`) so `list_tools` can tag the
+    // result-returning tools with `_meta.ui.resourceUri`. `call_tool`/`get_tool`
+    // mirror the macro's generated bodies exactly.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tcc = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let tools = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| {
+                if UI_TOOLS.contains(&tool.name.as_ref()) {
+                    tool.with_meta(app_ui::tool_meta())
+                } else {
+                    tool
+                }
+            })
+            .collect();
+        Ok(ListToolsResult {
+            tools,
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.tool_router.get(name).cloned().map(|tool| {
+            if UI_TOOLS.contains(&name) {
+                tool.with_meta(app_ui::tool_meta())
+            } else {
+                tool
+            }
+        })
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult {
+            resources: vec![app_ui::resource()],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if request.uri == app_ui::APP_URI {
+            Ok(ReadResourceResult::new(vec![app_ui::contents()]))
+        } else {
+            Err(ErrorData::resource_not_found(
+                format!("no resource at {}", request.uri),
+                None,
             ))
-            .with_instructions(
+        }
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(
                 "joblode exposes the open-jobs dataset. Use search_jobs to draw a candidate set with \
                  hard filters, then rank_jobs to reduce it to a compact shortlist (cheaply, against \
                  the user's prior feedback) before reading details, and get_job for a role's full \
@@ -405,6 +495,83 @@ mod tests {
 
         assert_eq!(rows[0]["id"], "city-direct");
         assert!(rows[0]["score"].as_f64().unwrap() > 0.99);
+
+        client.cancel().await.ok();
+    }
+
+    #[tokio::test]
+    async fn result_tools_carry_the_ui_resource_link() {
+        // The result-returning tools advertise _meta.ui.resourceUri so a host
+        // renders the MCP App; get_job (detail-only) does not.
+        let client = connect().await;
+        let tools = client.list_all_tools().await.expect("list tools");
+
+        let ui_for = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.meta.as_ref())
+                .and_then(|m| m.0.get("ui"))
+                .and_then(|ui| ui.get("resourceUri"))
+                .and_then(|uri| uri.as_str())
+                .map(str::to_string)
+        };
+
+        assert_eq!(ui_for("search_jobs").as_deref(), Some(app_ui::APP_URI));
+        assert_eq!(ui_for("semantic_search").as_deref(), Some(app_ui::APP_URI));
+        assert_eq!(ui_for("rank_jobs").as_deref(), Some(app_ui::APP_URI));
+        assert_eq!(ui_for("get_job"), None);
+
+        client.cancel().await.ok();
+    }
+
+    #[tokio::test]
+    async fn lists_the_ui_app_resource() {
+        let client = connect().await;
+
+        let resources = client.list_all_resources().await.expect("list resources");
+        let app = resources
+            .iter()
+            .find(|r| r.uri == app_ui::APP_URI)
+            .expect("ui:// app resource is advertised");
+
+        assert_eq!(app.mime_type.as_deref(), Some(app_ui::APP_MIME));
+
+        client.cancel().await.ok();
+    }
+
+    #[tokio::test]
+    async fn reads_the_ui_app_resource_as_html() {
+        use rmcp::model::{ReadResourceRequestParams, ResourceContents};
+        let client = connect().await;
+
+        let result = client
+            .read_resource(ReadResourceRequestParams::new(app_ui::APP_URI))
+            .await
+            .expect("read resource");
+
+        let ResourceContents::TextResourceContents {
+            text, mime_type, ..
+        } = result.contents.first().expect("one content")
+        else {
+            panic!("expected text resource contents");
+        };
+        assert_eq!(mime_type.as_deref(), Some(app_ui::APP_MIME));
+        assert!(text.contains("<!doctype html>"), "served HTML: {text}");
+
+        client.cancel().await.ok();
+    }
+
+    #[tokio::test]
+    async fn reading_an_unknown_resource_errors() {
+        use rmcp::model::ReadResourceRequestParams;
+        let client = connect().await;
+
+        let result = client
+            .read_resource(ReadResourceRequestParams::new("ui://joblode/nope"))
+            .await;
+
+        assert!(result.is_err());
 
         client.cancel().await.ok();
     }

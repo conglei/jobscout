@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getJob, rankJobs, searchJobs, semanticSearch } from "./api";
+import {
+  createBridgeSource,
+  getJob,
+  httpSource,
+  inMcpApp,
+  rankJobs,
+  searchJobs,
+  semanticSearch,
+  setActiveSource,
+  type ToolBridge,
+} from "./api";
 
 function mockFetch(body: unknown, ok = true, status = 200) {
   const fetchMock = vi.fn().mockResolvedValue({
@@ -15,7 +25,24 @@ function mockFetch(body: unknown, ok = true, status = 200) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setActiveSource(httpSource); // a swap test must not leak into the next test
 });
+
+/** A fake App bridge that records the call and returns a canned tool result. */
+function fakeBridge(result: {
+  structuredContent?: unknown;
+  content?: { type: string; text?: string }[];
+  isError?: boolean;
+}): ToolBridge & { calls: { name: string; arguments: unknown }[] } {
+  const calls: { name: string; arguments: unknown }[] = [];
+  return {
+    calls,
+    callServerTool: (request) => {
+      calls.push(request);
+      return Promise.resolve(result);
+    },
+  };
+}
 
 describe("searchJobs", () => {
   it("POSTs the criteria as JSON and returns the results", async () => {
@@ -95,5 +122,64 @@ describe("semanticSearch", () => {
     await expect(semanticSearch({ query: "x" })).rejects.toThrow(
       "requires a configured embeddings model",
     );
+  });
+});
+
+describe("createBridgeSource", () => {
+  it("calls the named tool with the params and returns its structured content", async () => {
+    const results = { total: 1, results: [{ id: "a" }] };
+    const bridge = fakeBridge({ structuredContent: results });
+    const source = createBridgeSource(bridge);
+
+    expect(await source.searchJobs({ cities: ["sf"] })).toEqual(results);
+    expect(bridge.calls).toEqual([
+      { name: "search_jobs", arguments: { cities: ["sf"] } },
+    ]);
+  });
+
+  it("wraps get_job's id into the tool arguments", async () => {
+    const bridge = fakeBridge({ structuredContent: { id: "a b" } });
+    const source = createBridgeSource(bridge);
+
+    await source.getJob("a b");
+    expect(bridge.calls).toEqual([{ name: "get_job", arguments: { id: "a b" } }]);
+  });
+
+  it("throws the tool's error text when the result is an error", async () => {
+    const bridge = fakeBridge({
+      isError: true,
+      content: [{ type: "text", text: "ranking method 'match' requires a key" }],
+    });
+    const source = createBridgeSource(bridge);
+
+    await expect(source.rankJobs({ method: "match" })).rejects.toThrow(
+      "requires a key",
+    );
+  });
+
+  it("throws when a result carries no structured content", async () => {
+    const source = createBridgeSource(fakeBridge({}));
+    await expect(source.semanticSearch({ query: "x" })).rejects.toThrow(
+      "semantic_search failed",
+    );
+  });
+});
+
+describe("source selection", () => {
+  it("defaults to the HTTP source and runs outside an MCP App", () => {
+    // jsdom's window is its own top, so we are not embedded.
+    expect(inMcpApp()).toBe(false);
+  });
+
+  it("setActiveSource routes the exported calls to the chosen source", async () => {
+    const results = { total: 0, results: [] };
+    const bridge = fakeBridge({ structuredContent: results });
+    setActiveSource(createBridgeSource(bridge));
+
+    expect(await searchJobs({ titles: ["eng"] })).toEqual(results);
+    expect(bridge.calls[0]).toEqual({
+      name: "search_jobs",
+      arguments: { titles: ["eng"] },
+    });
   });
 });
