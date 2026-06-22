@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react";
 import { ActionIcon, Anchor, Badge, Group, Table, Text } from "@mantine/core";
 
 import { formatSalary } from "../lib";
@@ -25,6 +26,13 @@ export function ResultsTable({
 }: ResultsTableProps) {
   const showScores = scores !== undefined;
   const showReactions = onFeedback !== undefined;
+
+  // A reaction button's Enter/Space must not also bubble up and select the row.
+  const stopRowKeys = (event: KeyboardEvent) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.stopPropagation();
+    }
+  };
 
   return (
     <Table highlightOnHover stickyHeader>
@@ -83,6 +91,7 @@ export function ResultsTable({
                       aria-label={`Like ${row.title}`}
                       variant={reaction === "liked" ? "filled" : "subtle"}
                       color="teal"
+                      onKeyDown={stopRowKeys}
                       onClick={(event) => {
                         event.stopPropagation();
                         onFeedback?.(row.id, "liked");
@@ -94,6 +103,7 @@ export function ResultsTable({
                       aria-label={`Dislike ${row.title}`}
                       variant={reaction === "disliked" ? "filled" : "subtle"}
                       color="red"
+                      onKeyDown={stopRowKeys}
                       onClick={(event) => {
                         event.stopPropagation();
                         onFeedback?.(row.id, "disliked");

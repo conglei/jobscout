@@ -45,9 +45,11 @@ export function App() {
 
   async function runSearch(params: SearchParams) {
     const searchId = ++latestSearchId.current;
+    ++latestRankId.current; // invalidate any in-flight rank call against the old set
     setLoading(true);
     setError(null);
     setRanked(null); // a new candidate set invalidates the old ranking
+    setRankLoading(false);
     setRankError(null);
     try {
       const next = await searchJobs(params);

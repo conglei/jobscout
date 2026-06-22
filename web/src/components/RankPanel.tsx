@@ -67,9 +67,11 @@ export function RankPanel({
       ) : null}
       <Group grow>
         <Button
-          onClick={() => onRank({ resume, method })}
+          onClick={() => onRank({ resume: resume.trim(), method })}
           loading={loading}
-          disabled={disabled}
+          disabled={
+            disabled || (method !== "free" && resume.trim().length === 0)
+          }
         >
           Rank results
         </Button>

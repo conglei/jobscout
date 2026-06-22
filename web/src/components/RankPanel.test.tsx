@@ -54,4 +54,19 @@ describe("RankPanel", () => {
     renderPanel({ disabled: true });
     expect(screen.getByRole("button", { name: "Rank results" })).toBeDisabled();
   });
+
+  it("blocks a model method until a resume is entered", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByText("Pairwise"));
+    expect(
+      screen.getByRole("button", { name: "Rank results" }),
+    ).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Resume"), "senior engineer");
+    expect(
+      screen.getByRole("button", { name: "Rank results" }),
+    ).toBeEnabled();
+  });
 });
