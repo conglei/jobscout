@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Button,
+  Divider,
   NumberInput,
   Stack,
   TagsInput,
@@ -34,13 +35,17 @@ function buildParams(state: {
 }
 
 interface FilterSidebarProps {
-  onSearch: (params: SearchParams) => void;
+  /** Runs a search with the hard filters and an optional semantic `query`. When
+   *  `query` is non-empty, results come back ranked by meaning. */
+  onSearch: (params: SearchParams, query: string) => void;
   loading: boolean;
 }
 
-/** The hard-filter form. Multi-value fields take free-entry tags (substring or
- *  exact match, per the server); submitting runs a search. */
+/** The unified search form: a free-text description (optional — ranks matches by
+ *  meaning) plus hard filters. Multi-value fields take free-entry tags (substring
+ *  or exact match, per the server); submitting runs one search. */
 export function FilterSidebar({ onSearch, loading }: FilterSidebarProps) {
+  const [query, setQuery] = useState("");
   const [titles, setTitles] = useState<string[]>([]);
   const [companies, setCompanies] = useState<string[]>([]);
   const [cities, setCities] = useState<string[]>([]);
@@ -51,7 +56,16 @@ export function FilterSidebar({ onSearch, loading }: FilterSidebarProps) {
 
   function submit() {
     onSearch(
-      buildParams({ titles, companies, cities, functions, levels, country, minComp }),
+      buildParams({
+        titles,
+        companies,
+        cities,
+        functions,
+        levels,
+        country,
+        minComp,
+      }),
+      query.trim(),
     );
   }
 
@@ -64,7 +78,15 @@ export function FilterSidebar({ onSearch, loading }: FilterSidebarProps) {
         submit();
       }}
     >
-      <Title order={4}>Filters</Title>
+      <Title order={4}>Search</Title>
+      <TextInput
+        label="Describe the role (optional)"
+        description="Ranks matches by meaning over the messy fields."
+        placeholder="e.g. building data pipelines for ML"
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
+      />
+      <Divider label="filters" labelPosition="center" />
       <TagsInput
         label="Title"
         placeholder="e.g. backend engineer"

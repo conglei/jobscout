@@ -6,6 +6,10 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/fixture.parquet")
 }
 
+fn rank_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/rank_fixture.parquet")
+}
+
 /// Larger than the fixture, so the default helper returns every match.
 const ALL: usize = 1000;
 
@@ -188,4 +192,89 @@ fn returns_none_for_a_missing_job() {
         .expect("query should succeed");
 
     assert!(result.is_none());
+}
+
+#[test]
+fn fetches_embeddings_for_known_ids_and_skips_unknown() {
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+
+    let map = store
+        .embeddings(&["city-direct", "city-location", "not-a-real-job-id"])
+        .expect("embeddings query should succeed");
+
+    assert_eq!(map.len(), 2, "unknown ids are omitted");
+    assert_eq!(map["city-direct"], vec![1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(map["city-location"], vec![0.0, 1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn embeddings_of_no_ids_is_empty() {
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+    assert!(store.embeddings(&[]).expect("ok").is_empty());
+}
+
+#[test]
+fn semantic_search_orders_by_cosine_similarity() {
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+
+    // The "engineering" direction [1,0,0,0] should surface city-direct first.
+    let (jobs, sims): (Vec<String>, Vec<f32>) = store
+        .semantic_search(&[1.0, 0.0, 0.0, 0.0], &Criteria::default(), 3)
+        .expect("semantic search should succeed")
+        .into_iter()
+        .map(|(job, sim)| (job.id, sim))
+        .unzip();
+
+    assert_eq!(jobs[0], "city-direct");
+    assert!(
+        (sims[0] - 1.0).abs() < 1e-4,
+        "top sim ~1.0, got {}",
+        sims[0]
+    );
+    // Descending order.
+    assert!(sims[0] >= sims[1] && sims[1] >= sims[2]);
+}
+
+#[test]
+fn semantic_search_respects_hard_filters() {
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+
+    // Restrict to data roles; the engineering query still ranks, but only data.
+    let ids: Vec<String> = store
+        .semantic_search(
+            &[1.0, 0.0, 0.0, 0.0],
+            &Criteria {
+                functions: vec!["data".into()],
+                ..Criteria::default()
+            },
+            10,
+        )
+        .expect("semantic search")
+        .into_iter()
+        .map(|(job, _)| job.id)
+        .collect();
+
+    assert!(!ids.contains(&"city-direct".to_string()));
+    assert!(ids
+        .iter()
+        .all(|id| id.starts_with("comp-") || id == "city-location"));
+}
+
+#[test]
+fn semantic_search_of_empty_query_is_empty() {
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+    assert!(store
+        .semantic_search(&[], &Criteria::default(), 5)
+        .expect("ok")
+        .is_empty());
+}
+
+#[test]
+fn a_null_embedding_comes_back_empty_not_an_error() {
+    // The live dataset has rows with a NULL jd_embedding; that must not error.
+    let store = JobStore::open(rank_fixture()).expect("rank fixture should open");
+
+    let map = store.embeddings(&["comp-low"]).expect("embeddings query");
+
+    assert_eq!(map["comp-low"], Vec::<f32>::new());
 }

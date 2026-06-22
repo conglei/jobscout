@@ -43,3 +43,50 @@ export interface Job extends JobSummary {
   region: string;
   jd_markdown: string;
 }
+
+/** A user's reaction to a role — the feedback-loop signal. */
+export type FeedbackLabel = "liked" | "disliked";
+
+/** One reaction passed to `rank` to personalize the free taste ranking. */
+export interface FeedbackItem {
+  id: string;
+  label: FeedbackLabel;
+}
+
+/** `rank` input: a candidate source (filters or explicit `ids`), the resume +
+ *  method for the optional model pass, and prior feedback. */
+export interface RankParams extends SearchParams {
+  ids?: string[];
+  resume?: string;
+  feedback?: FeedbackItem[];
+  /** Omit for the free, keyless taste ranking. */
+  method?: "match" | "pairwise";
+  top?: number;
+}
+
+/** One ranked role: id + 0–100 score + an optional one-line reason. */
+export interface Ranked {
+  id: string;
+  score: number;
+  why: string;
+}
+
+/** `rank` result: a compact, ordered shortlist. */
+export interface RankResults {
+  results: Ranked[];
+}
+
+/** `semantic` input: a free-text query plus the same hard filters. */
+export interface SemanticParams extends SearchParams {
+  query: string;
+}
+
+/** One semantic hit: a compact row plus its cosine similarity in [-1, 1]. */
+export interface SemanticHit extends JobSummary {
+  score: number;
+}
+
+/** `semantic` result: rows ordered by similarity, best first. */
+export interface SemanticResults {
+  results: SemanticHit[];
+}
