@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use joblode_core::{Criteria, Job, JobStore};
+use joblode_core::{Criteria, JobStore};
 use joblode_rank::{Candidate, EmbedClient, Method, ModelClient, RankRequest};
 
 use crate::dto::{FeedbackItem, RankParams, RankResults};
@@ -23,6 +23,11 @@ const RANK_CANDIDATE_LIMIT: usize = 1000;
 /// Hard ceiling on the candidate draw, so the rank path can rank far more than a
 /// search page (`MAX_LIMIT`) without being unbounded.
 const RANK_MAX_CANDIDATES: usize = 2000;
+
+/// When a `query` is given, the candidate pool is the top-N most similar roles
+/// (then re-ranked by taste). Bounds the wide row fetch while giving the shortlist
+/// plenty of headroom over a typical `top`.
+const RANK_QUERY_POOL: usize = 500;
 
 /// How many taste-ordered candidates the `match` pass scores (one model call each).
 const REFINE_MATCH: usize = 20;
@@ -110,13 +115,10 @@ pub async fn run(
     };
 
     let criteria = params.filter.criteria();
-    // Clamp to the rank ceiling, so a client can't force an unbounded candidate
-    // fetch — but rank can still order far more than a search page.
-    let candidate_limit = params
-        .filter
-        .limit
-        .unwrap_or(RANK_CANDIDATE_LIMIT)
-        .min(RANK_MAX_CANDIDATES);
+    // Rank draws a large candidate pool (the whole matching set, capped) — never the
+    // search `limit`/page size, which would shrink the pool and starve `top`. The
+    // pool is at least `top` and at least the default, capped at the ceiling.
+    let candidate_limit = top.clamp(RANK_CANDIDATE_LIMIT, RANK_MAX_CANDIDATES);
     let ids = params.ids;
     let feedback = params.feedback;
     let prep_store = store.clone();
@@ -188,10 +190,9 @@ fn prepare_candidates(
     query_vec: Option<Vec<f32>>,
 ) -> anyhow::Result<Prepared> {
     // (id, title, summary) per candidate — title/summary empty on the free path.
-    let candidates_meta: Vec<(String, String, String)> = if need_metadata {
-        let jobs: Vec<Job> = if ids.is_empty() {
-            store.search(criteria, candidate_limit)?.0
-        } else {
+    let candidates_meta: Vec<(String, String, String)> = if !ids.is_empty() {
+        // Explicit candidate ids (e.g. re-ranking a shown page).
+        if need_metadata {
             let mut found = Vec::with_capacity(ids.len());
             let mut seen = std::collections::HashSet::with_capacity(ids.len());
             for id in ids {
@@ -203,22 +204,37 @@ fn prepare_candidates(
                 }
             }
             found
-        };
-        jobs.into_iter()
-            .map(|job| (job.id, job.title, job.role_summary))
-            .collect()
-    } else {
-        // Free path: id-only draw — no per-id get_job, no wide row columns.
-        let candidate_ids = if ids.is_empty() {
-            store.candidate_ids(criteria, candidate_limit)?
+                .into_iter()
+                .map(|job| (job.id, job.title, job.role_summary))
+                .collect()
         } else {
             let mut seen = std::collections::HashSet::with_capacity(ids.len());
             ids.iter()
                 .filter(|id| seen.insert(id.as_str()))
-                .cloned()
+                .map(|id| (id.clone(), String::new(), String::new()))
                 .collect()
-        };
-        candidate_ids
+        }
+    } else if let Some(query) = query_vec.as_deref() {
+        // A query is given: the candidate pool is the most *similar* roles (best
+        // first), then re-ranked by taste below — so the shortlist is the best
+        // matches, not the first rows by id. One query, with metadata for both paths.
+        let pool = candidate_limit.min(RANK_QUERY_POOL);
+        store
+            .semantic_search(query, criteria, pool)?
+            .into_iter()
+            .map(|(job, _)| (job.id, job.title, job.role_summary))
+            .collect()
+    } else if need_metadata {
+        store
+            .search(criteria, candidate_limit)?
+            .0
+            .into_iter()
+            .map(|job| (job.id, job.title, job.role_summary))
+            .collect()
+    } else {
+        // Free, no query: id-only draw — no per-id get_job, no wide row columns.
+        store
+            .candidate_ids(criteria, candidate_limit)?
             .into_iter()
             .map(|id| (id, String::new(), String::new()))
             .collect()

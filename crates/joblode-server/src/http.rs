@@ -346,6 +346,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rank_pool_ignores_a_leaked_search_limit() {
+        // A `limit` carried over from search must not shrink the candidate pool:
+        // with feedback and top:5, rank should still return more than `limit:1`.
+        let response = rank_app(None)
+            .oneshot(post_json(
+                "/api/rank",
+                serde_json::json!({
+                    "feedback": [{ "id": "city-direct", "label": "liked" }],
+                    "limit": 1,
+                    "top": 5
+                }),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let data = body_json(response).await;
+        let rows = data["results"].as_array().expect("results array");
+        assert!(
+            rows.len() > 1,
+            "leaked limit must not cap the pool: {}",
+            rows.len()
+        );
+        assert_eq!(rows[0]["id"], "city-direct");
+    }
+
+    #[tokio::test]
     async fn rank_match_method_uses_the_configured_model() {
         let model = Arc::new(crate::ranking::testing::FavorId("city-direct"));
         let response = rank_app(Some(model))
