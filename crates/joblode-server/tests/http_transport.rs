@@ -124,7 +124,7 @@ async fn http_transport_serves_the_mcp_handshake_and_search() {
 
 #[test]
 fn rejects_an_unknown_transport() {
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_joblode-server"))
+    let status = Command::new(env!("CARGO_BIN_EXE_joblode-server"))
         .arg("carrier-pigeon")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -132,4 +132,22 @@ fn rejects_an_unknown_transport() {
         .expect("run joblode-server");
 
     assert!(!status.success(), "unknown transport should exit non-zero");
+}
+
+#[test]
+fn refuses_to_bind_a_non_loopback_address() {
+    // The server is local-only; binding 0.0.0.0 must be refused before it listens.
+    let status = Command::new(env!("CARGO_BIN_EXE_joblode-server"))
+        .arg("http")
+        .env("JOBLODE_PARQUET", fixture_path())
+        .env("JOBLODE_HTTP_ADDR", "0.0.0.0:0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run joblode-server");
+
+    assert!(
+        !status.success(),
+        "non-loopback bind address should exit non-zero"
+    );
 }

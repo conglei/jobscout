@@ -161,13 +161,13 @@ impl JobServer {
             store
                 .lock()
                 .expect("store mutex poisoned")
-                .search(&criteria)
+                .search(&criteria, limit)
         })
         .await
         .map_err(|error| ErrorData::internal_error(format!("search task failed: {error}"), None))?
         .map_err(|error| ErrorData::internal_error(format!("search failed: {error}"), None))?;
 
-        let results = jobs.iter().take(limit).map(JobSummary::from).collect();
+        let results = jobs.iter().map(JobSummary::from).collect();
         Ok(Json(SearchResults { total, results }))
     }
 
@@ -186,7 +186,9 @@ impl JobServer {
         })
         .await
         .map_err(|error| ErrorData::internal_error(format!("get_job task failed: {error}"), None))?
-        .map_err(|error| ErrorData::invalid_params(format!("get_job failed: {error}"), None))?;
+        // A genuine query failure is internal; a missing id is the caller's fault.
+        .map_err(|error| ErrorData::internal_error(format!("get_job failed: {error}"), None))?
+        .ok_or_else(|| ErrorData::invalid_params("no job with that id".to_string(), None))?;
 
         Ok(Json(job))
     }

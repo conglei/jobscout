@@ -52,7 +52,15 @@ async fn serve_stdio(store: Arc<Mutex<JobStore>>) -> Result<()> {
 }
 
 async fn serve_http(store: Arc<Mutex<JobStore>>) -> Result<()> {
-    let addr = std::env::var("JOBLODE_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8000".into());
+    let addr_str = std::env::var("JOBLODE_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8000".into());
+    // The server is local-only by design (see DESIGN §13); refuse to bind a
+    // non-loopback address so JOBLODE_HTTP_ADDR can set the port but not expose us.
+    let addr: std::net::SocketAddr = addr_str
+        .parse()
+        .with_context(|| format!("JOBLODE_HTTP_ADDR must be ip:port, got '{addr_str}'"))?;
+    if !addr.ip().is_loopback() {
+        bail!("JOBLODE_HTTP_ADDR must be a loopback address (got '{addr_str}'); the server is local-only");
+    }
     let cancellation = tokio_util::sync::CancellationToken::new();
 
     let service = StreamableHttpService::new(

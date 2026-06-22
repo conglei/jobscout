@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use duckdb::{params_from_iter, types::Value, Connection, Error, Result, Row};
+use duckdb::{params_from_iter, types::Value, Connection, Error, OptionalExt, Result, Row};
 
 /// Returns the crate version.
 #[must_use]
@@ -107,13 +107,16 @@ impl JobStore {
         })
     }
 
-    /// Searches jobs and returns deduplicated results plus the total count.
+    /// Searches jobs and returns up to `limit` deduplicated rows plus the total
+    /// match count. `total` reflects all matches; only the returned rows are
+    /// capped, with `LIMIT` applied at the query level so unreturned rows are
+    /// never materialized.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying SQL query fails (e.g. the dataset
     /// schema is missing an expected column).
-    pub fn search(&self, criteria: &Criteria) -> Result<(Vec<Job>, usize)> {
+    pub fn search(&self, criteria: &Criteria, limit: usize) -> Result<(Vec<Job>, usize)> {
         let mut filters = Vec::new();
         let mut parameters = vec![Value::Text(self.parquet.clone())];
 
@@ -214,6 +217,7 @@ impl JobStore {
                 count(*) OVER ()
             FROM deduplicated
             ORDER BY cast(id AS VARCHAR)
+            LIMIT {limit}
             "#
         );
 
@@ -235,12 +239,16 @@ impl JobStore {
 
     /// Retrieves one full job by dataset identifier.
     ///
+    /// Returns `Ok(None)` when no job has the given `id`, distinguishing a
+    /// genuine miss from a query failure.
+    ///
     /// # Errors
     ///
-    /// Returns an error if no job has the given `id`, or if the query fails.
-    pub fn get_job(&self, id: &str) -> Result<Job> {
-        self.connection.query_row(
-            r#"
+    /// Returns an error if the query itself fails.
+    pub fn get_job(&self, id: &str) -> Result<Option<Job>> {
+        self.connection
+            .query_row(
+                r#"
             SELECT
                 cast(id AS VARCHAR),
                 coalesce(nullif(company_name, ''), company, ''),
@@ -263,9 +271,10 @@ impl JobStore {
             WHERE cast(id AS VARCHAR) = ?
             LIMIT 1
             "#,
-            [&self.parquet, id],
-            job_from_row,
-        )
+                [&self.parquet, id],
+                job_from_row,
+            )
+            .optional()
     }
 }
 
